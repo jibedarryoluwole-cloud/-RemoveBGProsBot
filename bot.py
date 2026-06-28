@@ -1,11 +1,11 @@
 import os
 import logging
 import io
+import base64
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 import aiohttp
 from PIL import Image
-import rembg
 
 # ===== CONFIGURATION =====
 TOKEN = os.environ.get("TELEGRAM_TOKEN") or os.environ.get("BOT_TOKEN")
@@ -28,11 +28,60 @@ logger.info(f"✅ Remove.bg API: {'✅ Set' if REMOVEBG_API_KEY else '❌ Not se
 
 # ===== BACKGROUND REMOVAL FUNCTIONS =====
 
+async def remove_background_removebg_api(image_data):
+    """
+    Remove background using remove.bg API
+    Requires REMOVEBG_API_KEY environment variable
+    """
+    if not REMOVEBG_API_KEY:
+        return None, "Remove.bg API key not configured"
+    
+    try:
+        url = "https://api.remove.bg/v1.0/removebg"
+        headers = {
+            "X-Api-Key": REMOVEBG_API_KEY
+        }
+        
+        files = {
+            "image_file": image_data
+        }
+        
+        data = {
+            "size": "auto",
+            "format": "png"
+        }
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=headers, files=files, data=data) as response:
+                if response.status == 200:
+                    result = await response.read()
+                    output = io.BytesIO(result)
+                    output.seek(0)
+                    return output, "remove.bg API"
+                else:
+                    error_text = await response.text()
+                    logger.error(f"remove.bg API error: {response.status} - {error_text}")
+                    return None, f"API Error: {response.status}"
+    except Exception as e:
+        logger.error(f"remove.bg API error: {str(e)}")
+        return None, str(e)
+
+# Try to import rembg with fallback
+try:
+    import rembg
+    REMBG_AVAILABLE = True
+    logger.info("✅ rembg library available")
+except ImportError:
+    REMBG_AVAILABLE = False
+    logger.warning("⚠️ rembg library not available - using remove.bg API only")
+
 async def remove_background_rembg(image_data):
     """
     Remove background using rembg library (free, runs locally)
-    Uses rembg 2.0.62 which is compatible with Python 3.13
     """
+    if not REMBG_AVAILABLE:
+        return None, "rembg not available"
+    
     try:
         # Open image
         input_image = Image.open(io.BytesIO(image_data))
@@ -49,67 +98,31 @@ async def remove_background_rembg(image_data):
         output_image.save(output, format='PNG')
         output.seek(0)
         
-        return output
+        return output, "rembg (local)"
     except Exception as e:
         logger.error(f"rembg error: {str(e)}")
-        return None
-
-async def remove_background_removebg_api(image_data):
-    """
-    Remove background using remove.bg API
-    Requires REMOVEBG_API_KEY environment variable
-    """
-    if not REMOVEBG_API_KEY:
-        return None
-    
-    try:
-        url = "https://api.remove.bg/v1.0/removebg"
-        headers = {
-            "X-Api-Key": REMOVEBG_API_KEY
-        }
-        
-        # Prepare the image
-        files = {
-            "image_file": image_data
-        }
-        
-        data = {
-            "size": "auto",
-            "format": "png"
-        }
-        
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, headers=headers, files=files, data=data) as response:
-                if response.status == 200:
-                    result = await response.read()
-                    output = io.BytesIO(result)
-                    output.seek(0)
-                    return output
-                else:
-                    error_text = await response.text()
-                    logger.error(f"remove.bg API error: {response.status} - {error_text}")
-                    return None
-    except Exception as e:
-        logger.error(f"remove.bg API error: {str(e)}")
-        return None
+        return None, str(e)
 
 async def remove_background(image_data):
     """
     Remove background using available method
-    Try remove.bg API first if key is set, otherwise fallback to rembg
+    Priority: remove.bg API > rembg
     """
     # Try remove.bg API first if key is set
     if REMOVEBG_API_KEY:
-        result = await remove_background_removebg_api(image_data)
+        result, error = await remove_background_removebg_api(image_data)
         if result:
             return result, "remove.bg API"
+        logger.warning(f"remove.bg API failed: {error}, trying rembg...")
     
     # Fallback to rembg (free)
-    result = await remove_background_rembg(image_data)
-    if result:
-        return result, "rembg (local)"
+    if REMBG_AVAILABLE:
+        result, error = await remove_background_rembg(image_data)
+        if result:
+            return result, "rembg (local)"
+        logger.warning(f"rembg failed: {error}")
     
-    return None, None
+    return None, "No background removal method available"
 
 # ===== BOT COMMAND HANDLERS =====
 
@@ -121,18 +134,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📝 *What I can do:*\n"
         "• Remove backgrounds from photos\n"
         "• Return PNG with transparent background\n"
-        "• Preserve original image quality\n"
-        "• Works on any device\n\n"
+        "• Preserve original image quality\n\n"
         "🔧 *Commands:*\n"
         "/start - Show this message\n"
         "/help - Get help\n"
         "/about - About this bot\n"
-        "/stats - Your usage statistics\n\n"
+        "/stats - Your usage statistics\n"
+        "/info - API status\n\n"
         "💡 *How to use:*\n"
         "1. Send me an image (photo or document)\n"
         "2. I'll remove the background\n"
-        "3. Get your result instantly!\n\n"
-        "⚡ *Pro Tip:* Send as a document for best quality"
+        "3. Get your result instantly!"
     )
     
     keyboard = [
@@ -159,11 +171,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/start - Welcome message\n"
         "/help - Show this help\n"
         "/about - About this bot\n"
-        "/stats - Your usage statistics\n\n"
+        "/stats - Your usage statistics\n"
+        "/info - API status\n\n"
         "⚡ *Tips:*\n"
         "• Images with clear subjects work best\n"
-        "• Send as document for best quality\n"
-        "• The bot keeps your images private"
+        "• Send as document for best quality"
     )
     await update.message.reply_text(help_text, parse_mode="Markdown")
 
@@ -173,8 +185,8 @@ async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📱 *About RemoveBG Pros Bot*\n\n"
         "🤖 *Name:* RemoveBG Pros Bot\n"
         "📝 *Username:* @RemoveBGProsBot\n"
-        "🔧 *Version:* 1.0.0\n"
-        "🛠 *Built with:* python-telegram-bot, rembg\n"
+        "🔧 *Version:* 2.0.0\n"
+        "🛠 *Built with:* python-telegram-bot, remove.bg API\n"
         "🎯 *Purpose:* Remove backgrounds from images\n\n"
         "📚 *Source Code:* Available on GitHub\n"
         "💻 *Deployed on:* Railway"
@@ -194,6 +206,16 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Keep sending images to remove backgrounds!"
     )
     await update.message.reply_text(stats_text, parse_mode="Markdown")
+
+async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show API status"""
+    status = (
+        "📊 *API Status*\n\n"
+        f"🔐 *Remove.bg API:* {'✅ Connected' if REMOVEBG_API_KEY else '❌ Not configured'}\n"
+        f"🧠 *rembg (local):* {'✅ Available' if REMBG_AVAILABLE else '❌ Not available'}\n\n"
+        f"💡 *Recommended:* For best results, get a free remove.bg API key at remove.bg"
+    )
+    await update.message.reply_text(status, parse_mode="Markdown")
 
 async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle images sent to the bot"""
@@ -256,7 +278,7 @@ async def handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "💡 Tips:\n"
                 "• Try an image with a clear subject\n"
                 "• Make sure the image is not too large\n"
-                "• Try sending as a document for better quality",
+                "• Use /info to check API status",
                 parse_mode="Markdown"
             )
             
@@ -311,6 +333,7 @@ def main():
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("about", about_command))
     app.add_handler(CommandHandler("stats", stats_command))
+    app.add_handler(CommandHandler("info", info_command))
     
     # Add message handlers for images
     app.add_handler(MessageHandler(filters.PHOTO, handle_image))
