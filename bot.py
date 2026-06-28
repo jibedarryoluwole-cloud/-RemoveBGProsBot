@@ -1,7 +1,6 @@
 import os
 import logging
 import io
-import base64
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 import aiohttp
@@ -10,7 +9,7 @@ import rembg
 
 # ===== CONFIGURATION =====
 TOKEN = os.environ.get("TELEGRAM_TOKEN") or os.environ.get("BOT_TOKEN")
-REMOVEBG_API_KEY = os.environ.get("REMOVEBG_API_KEY")  # Optional: for remove.bg API
+REMOVEBG_API_KEY = os.environ.get("REMOVEBG_API_KEY")
 
 # ===== LOGGING SETUP =====
 logging.basicConfig(
@@ -32,11 +31,15 @@ logger.info(f"✅ Remove.bg API: {'✅ Set' if REMOVEBG_API_KEY else '❌ Not se
 async def remove_background_rembg(image_data):
     """
     Remove background using rembg library (free, runs locally)
-    Based on existing Telegram bot implementations using rembg [citation:3][citation:5]
+    Uses rembg 2.0.62 which is compatible with Python 3.13
     """
     try:
         # Open image
         input_image = Image.open(io.BytesIO(image_data))
+        
+        # Convert to RGB if needed (rembg works better with RGB)
+        if input_image.mode != 'RGB':
+            input_image = input_image.convert('RGB')
         
         # Remove background using rembg
         output_image = rembg.remove(input_image)
@@ -54,7 +57,7 @@ async def remove_background_rembg(image_data):
 async def remove_background_removebg_api(image_data):
     """
     Remove background using remove.bg API
-    Requires REMOVEBG_API_KEY environment variable [citation:2]
+    Requires REMOVEBG_API_KEY environment variable
     """
     if not REMOVEBG_API_KEY:
         return None
